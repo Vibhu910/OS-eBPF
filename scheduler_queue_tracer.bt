@@ -1,6 +1,7 @@
 #!/usr/bin/env bpftrace
-# Scheduler and Queue Tracer for CSE536/548
-# Traces: Process scheduling with vruntime (via libbpf), ready/wait queues, process lifecycle
+# scheduler_queue_tracer.bt
+# Traces: context switches, wakeups, migration, fork/exit/exec
+# NOTE: This is bpftrace only; se.vruntime requires libbpf/CO-RE.
 
 BEGIN
 {
@@ -8,12 +9,9 @@ BEGIN
     printf("Tracing: Scheduling, Queues, Process Lifecycle\n\n");
 }
 
-/* Process Scheduling - Every context switch */
+/* Context switch (safe fields only). nsecs is u64 -> %llu */
 tracepoint:sched:sched_switch
 {
-    /* nsecs is u64 -> use %llu
-       args->prev_comm / args->next_comm are string[16] -> use %s directly
-       There is no args->cpu field on this tracepoint; use built-in 'cpu' */
     printf("%llu SCHED_SWITCH prev_pid=%d prev_comm=%s -> next_pid=%d next_comm=%s cpu=%d\n",
            nsecs,
            args->prev_pid,
@@ -23,7 +21,7 @@ tracepoint:sched:sched_switch
            cpu);
 }
 
-/* Ready / Wakeup operations */
+/* Wakeups (ready queue events) */
 tracepoint:sched:sched_wakeup
 {
     printf("%llu WAKEUP pid=%d comm=%s prio=%d target_cpu=%d\n",
@@ -36,6 +34,7 @@ tracepoint:sched:sched_wakeup_new
            nsecs, args->pid, args->comm, args->prio, args->target_cpu);
 }
 
+/* Task migrate (CPU change) */
 tracepoint:sched:sched_migrate_task
 {
     printf("%llu MIGRATE pid=%d comm=%s prio=%d orig_cpu=%d dest_cpu=%d\n",
