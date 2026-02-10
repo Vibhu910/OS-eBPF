@@ -1,39 +1,17 @@
 #!/usr/bin/env bpftrace
-# Comprehensive Kernel Tracer for CSE536/548
+# Page Fault and VM Tracer for CSE536/548
+# Traces: Page faults with virtual addresses, VM area changes (mmap, munmap, mprotect, brk)
+# Designed for forking commands (like ls, find, etc.)
 
 BEGIN
 {
-    printf("=== Kernel Tracer Started ===\n");
+    printf("=== Page Fault & VM Tracer Started ===\n");
+    printf("Tracing: Page Faults, VM Operations, Process Lifecycle\n");
     printf("Use 'bpftrace -p PID' to filter by process ID\n");
-    printf("Use 'bpftrace -c COMMAND' to trace a command\n\n");
+    printf("Use 'bpftrace -c COMMAND' to trace a forking command\n\n");
 }
 
-// Process Scheduling
-tracepoint:sched:sched_switch
-{
-    printf("%llu SCHED_SWITCH prev_pid=%d prev_comm=%s next_pid=%d next_comm=%s prev_state=%d\n",
-        nsecs, args->prev_pid, str(args->prev_comm), args->next_pid, str(args->next_comm), args->prev_state);
-}
-
-tracepoint:sched:sched_wakeup
-{
-    printf("%llu WAKEUP pid=%d comm=%s prio=%d target_cpu=%d\n",
-        nsecs, args->pid, str(args->comm), args->prio, args->target_cpu);
-}
-
-tracepoint:sched:sched_wakeup_new
-{
-    printf("%llu WAKEUP_NEW pid=%d comm=%s prio=%d target_cpu=%d\n",
-        nsecs, args->pid, str(args->comm), args->prio, args->target_cpu);
-}
-
-tracepoint:sched:sched_migrate_task
-{
-    printf("%llu MIGRATE pid=%d comm=%s prio=%d orig_cpu=%d dest_cpu=%d\n",
-        nsecs, args->pid, str(args->comm), args->prio, args->orig_cpu, args->dest_cpu);
-}
-
-// Process Lifecycle
+// Process Lifecycle (to track process from beginning to end)
 tracepoint:sched:sched_process_fork
 {
     printf("%llu FORK parent_pid=%d parent_comm=%s child_pid=%d\n",
@@ -105,62 +83,7 @@ tracepoint:syscalls:sys_enter_brk
     printf("%llu BRK pid=%d comm=%s brk=0x%lx\n", nsecs, pid, comm, args->brk);
 }
 
-// Scheduler Internals
-kprobe:__schedule
-{
-    printf("%llu SCHEDULE_INTERNAL pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
-}
-
-kprobe:pick_next_task_fair
-{
-    printf("%llu PICK_NEXT_TASK_FAIR pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
-}
-
-kprobe:enqueue_task_fair
-{
-    printf("%llu ENQUEUE_TASK pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
-}
-
-kprobe:dequeue_task_fair
-{
-    printf("%llu DEQUEUE_TASK pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
-}
-
-// Wait Queues
-kprobe:__wait_event
-{
-    printf("%llu WAIT_EVENT pid=%d comm=%s\n", nsecs, pid, comm);
-}
-
-kprobe:wake_up_process
-{
-    printf("%llu WAKE_UP_PROCESS pid=%d comm=%s\n", nsecs, pid, comm);
-}
-
-// VFS Operations
-kprobe:d_lookup
-{
-    printf("%llu D_LOOKUP pid=%d comm=%s\n", nsecs, pid, comm);
-}
-
-kprobe:__dentry_open
-{
-    printf("%llu DENTRY_OPEN pid=%d comm=%s\n", nsecs, pid, comm);
-}
-
-tracepoint:syscalls:sys_enter_open
-{
-    printf("%llu OPEN pid=%d comm=%s filename=%s flags=%d mode=%d\n",
-        nsecs, pid, comm, str(args->filename), args->flags, args->mode);
-}
-
-tracepoint:syscalls:sys_enter_openat
-{
-    printf("%llu OPENAT pid=%d comm=%s filename=%s dirfd=%d flags=%d mode=%d\n",
-        nsecs, pid, comm, str(args->filename), args->dirfd, args->flags, args->mode);
-}
-
 END
 {
-    printf("\n=== Kernel Tracer Stopped ===\n");
+    printf("\n=== Page Fault & VM Tracer Stopped ===\n");
 }
