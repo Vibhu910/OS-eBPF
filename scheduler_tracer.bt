@@ -1,0 +1,54 @@
+#!/usr/bin/env bpftrace
+# Enhanced Scheduler Tracer - attempts to access scheduler internals including se.vruntime
+
+BEGIN
+{
+    printf("=== Enhanced Scheduler Tracer ===\n\n");
+}
+
+tracepoint:sched:sched_stat_runtime
+{
+    printf("%llu SCHED_STAT_RUNTIME pid=%d comm=%s runtime=%llu vruntime=%llu\n",
+        nsecs, args->pid, str(args->comm), args->runtime, args->vruntime);
+}
+
+tracepoint:sched:sched_enqueue
+{
+    printf("%llu SCHED_ENQUEUE pid=%d comm=%s\n", nsecs, args->pid, str(args->comm));
+}
+
+tracepoint:sched:sched_dequeue
+{
+    printf("%llu SCHED_DEQUEUE pid=%d comm=%s\n", nsecs, args->pid, str(args->comm));
+}
+
+tracepoint:sched:sched_load_balance
+{
+    printf("%llu LOAD_BALANCE cpu=%d idle_cpu=%d busy_cpu=%d\n",
+        nsecs, args->cpu, args->idle_cpu, args->busy_cpu);
+}
+
+kprobe:enqueue_task_fair
+{
+    printf("%llu ENQUEUE_FAIR pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
+}
+
+kprobe:dequeue_task_fair
+{
+    printf("%llu DEQUEUE_FAIR pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
+}
+
+kprobe:update_curr
+{
+    printf("%llu UPDATE_CURR pid=%d comm=%s\n", nsecs, pid, comm);
+}
+
+kprobe:entity_tick
+{
+    printf("%llu ENTITY_TICK pid=%d comm=%s\n", nsecs, pid, comm);
+}
+
+END
+{
+    printf("\n=== Scheduler Tracer Stopped ===\n");
+}

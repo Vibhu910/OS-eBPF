@@ -1,0 +1,11 @@
+#!/usr/bin/env bpftrace
+#
+# exits.bt
+# Capture process exits (become zombie/exit)
+#
+
+tracepoint:sched:sched_process_exit
+{
+    printf("%llu EXIT pid=%d comm=%s\n", nsecs, args->pid, args->comm);
+}
+

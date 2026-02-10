@@ -1,0 +1,166 @@
+#!/usr/bin/env bpftrace
+# Comprehensive Kernel Tracer for CSE536/548
+
+BEGIN
+{
+    printf("=== Kernel Tracer Started ===\n");
+    printf("Use 'bpftrace -p PID' to filter by process ID\n");
+    printf("Use 'bpftrace -c COMMAND' to trace a command\n\n");
+}
+
+// Process Scheduling
+tracepoint:sched:sched_switch
+{
+    printf("%llu SCHED_SWITCH prev_pid=%d prev_comm=%s next_pid=%d next_comm=%s prev_state=%d\n",
+        nsecs, args->prev_pid, str(args->prev_comm), args->next_pid, str(args->next_comm), args->prev_state);
+}
+
+tracepoint:sched:sched_wakeup
+{
+    printf("%llu WAKEUP pid=%d comm=%s prio=%d target_cpu=%d\n",
+        nsecs, args->pid, str(args->comm), args->prio, args->target_cpu);
+}
+
+tracepoint:sched:sched_wakeup_new
+{
+    printf("%llu WAKEUP_NEW pid=%d comm=%s prio=%d target_cpu=%d\n",
+        nsecs, args->pid, str(args->comm), args->prio, args->target_cpu);
+}
+
+tracepoint:sched:sched_migrate_task
+{
+    printf("%llu MIGRATE pid=%d comm=%s prio=%d orig_cpu=%d dest_cpu=%d\n",
+        nsecs, args->pid, str(args->comm), args->prio, args->orig_cpu, args->dest_cpu);
+}
+
+// Process Lifecycle
+tracepoint:sched:sched_process_fork
+{
+    printf("%llu FORK parent_pid=%d parent_comm=%s child_pid=%d\n",
+        nsecs, args->parent_pid, str(args->parent_comm), args->child_pid);
+}
+
+tracepoint:sched:sched_process_exit
+{
+    printf("%llu EXIT pid=%d tgid=%d comm=%s exit_code=%d\n",
+        nsecs, args->pid, args->tgid, str(args->comm), args->exit_code);
+}
+
+tracepoint:sched:sched_process_exec
+{
+    printf("%llu EXEC pid=%d old_pid=%d filename=%s\n",
+        nsecs, args->pid, args->old_pid, str(args->filename));
+}
+
+// Page Faults
+tracepoint:exceptions:page_fault_user
+{
+    printf("%llu PAGE_FAULT pid=%d comm=%s vaddr=0x%lx ip=0x%lx present=%d write=%d user=%d error_code=0x%x\n",
+        nsecs, pid, comm, args->address, args->ip,
+        (args->error_code & 0x1) == 0 ? 1 : 0,
+        (args->error_code & 0x2) != 0 ? 1 : 0,
+        (args->error_code & 0x4) != 0 ? 1 : 0,
+        args->error_code);
+}
+
+tracepoint:exceptions:page_fault_kernel
+{
+    printf("%llu PAGE_FAULT_KERNEL pid=%d comm=%s vaddr=0x%lx ip=0x%lx present=%d write=%d error_code=0x%x\n",
+        nsecs, pid, comm, args->address, args->ip,
+        (args->error_code & 0x1) == 0 ? 1 : 0,
+        (args->error_code & 0x2) != 0 ? 1 : 0,
+        args->error_code);
+}
+
+// VM Operations
+tracepoint:syscalls:sys_enter_mmap
+{
+    printf("%llu MMAP_ENTER pid=%d comm=%s addr=0x%lx len=%lu prot=%d flags=%d fd=%d offset=%ld\n",
+        nsecs, pid, comm, args->addr, args->len, args->prot, args->flags, args->fd, args->offset);
+}
+
+tracepoint:syscalls:sys_exit_mmap
+{
+    if (args->ret > 0) {
+        printf("%llu MMAP_EXIT pid=%d comm=%s mapped_addr=0x%lx\n", nsecs, pid, comm, args->ret);
+    } else {
+        printf("%llu MMAP_EXIT pid=%d comm=%s failed errno=%ld\n", nsecs, pid, comm, args->ret);
+    }
+}
+
+tracepoint:syscalls:sys_enter_munmap
+{
+    printf("%llu MUNMAP pid=%d comm=%s addr=0x%lx len=%lu\n",
+        nsecs, pid, comm, args->addr, args->len);
+}
+
+tracepoint:syscalls:sys_enter_mprotect
+{
+    printf("%llu MPROTECT pid=%d comm=%s addr=0x%lx len=%lu prot=%d\n",
+        nsecs, pid, comm, args->addr, args->len, args->prot);
+}
+
+tracepoint:syscalls:sys_enter_brk
+{
+    printf("%llu BRK pid=%d comm=%s brk=0x%lx\n", nsecs, pid, comm, args->brk);
+}
+
+// Scheduler Internals
+kprobe:__schedule
+{
+    printf("%llu SCHEDULE_INTERNAL pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
+}
+
+kprobe:pick_next_task_fair
+{
+    printf("%llu PICK_NEXT_TASK_FAIR pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
+}
+
+kprobe:enqueue_task_fair
+{
+    printf("%llu ENQUEUE_TASK pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
+}
+
+kprobe:dequeue_task_fair
+{
+    printf("%llu DEQUEUE_TASK pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
+}
+
+// Wait Queues
+kprobe:__wait_event
+{
+    printf("%llu WAIT_EVENT pid=%d comm=%s\n", nsecs, pid, comm);
+}
+
+kprobe:wake_up_process
+{
+    printf("%llu WAKE_UP_PROCESS pid=%d comm=%s\n", nsecs, pid, comm);
+}
+
+// VFS Operations
+kprobe:d_lookup
+{
+    printf("%llu D_LOOKUP pid=%d comm=%s\n", nsecs, pid, comm);
+}
+
+kprobe:__dentry_open
+{
+    printf("%llu DENTRY_OPEN pid=%d comm=%s\n", nsecs, pid, comm);
+}
+
+tracepoint:syscalls:sys_enter_open
+{
+    printf("%llu OPEN pid=%d comm=%s filename=%s flags=%d mode=%d\n",
+        nsecs, pid, comm, str(args->filename), args->flags, args->mode);
+}
+
+tracepoint:syscalls:sys_enter_openat
+{
+    printf("%llu OPENAT pid=%d comm=%s filename=%s dirfd=%d flags=%d mode=%d\n",
+        nsecs, pid, comm, str(args->filename), args->dirfd, args->flags, args->mode);
+}
+
+END
+{
+    printf("\n=== Kernel Tracer Stopped ===\n");
+}
