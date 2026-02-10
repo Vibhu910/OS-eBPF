@@ -62,7 +62,7 @@ struct sched_event {
     char   prev_comm[TASK_COMM_LEN];
     __s32  prev_prio;
     __u64  prev_vruntime;
-    __u64  prev_sum_exec_runtime;
+    __u64  prev_sum_exec;       // prev task's se.sum_exec_runtime
     __u64  prev_load_weight;
 
     // ── MIGRATE fields ──
@@ -125,12 +125,12 @@ static __always_inline void fill_se(struct sched_event *e,
 static __always_inline void fill_prev_se(struct sched_event *e,
                                          struct task_struct *t)
 {
-    e->prev_pid              = BPF_CORE_READ(t, pid);
-    e->prev_tgid             = BPF_CORE_READ(t, tgid);
-    e->prev_prio             = BPF_CORE_READ(t, prio);
-    e->prev_vruntime         = BPF_CORE_READ(t, se.vruntime);
-    e->prev_sum_exec_runtime = BPF_CORE_READ(t, se.sum_exec_runtime);
-    e->prev_load_weight      = BPF_CORE_READ(t, se.load.weight);
+    e->prev_pid          = BPF_CORE_READ(t, pid);
+    e->prev_tgid         = BPF_CORE_READ(t, tgid);
+    e->prev_prio         = BPF_CORE_READ(t, prio);
+    e->prev_vruntime     = BPF_CORE_READ(t, se.vruntime);
+    e->prev_sum_exec     = BPF_CORE_READ(t, se.sum_exec_runtime);
+    e->prev_load_weight  = BPF_CORE_READ(t, se.load.weight);
     bpf_core_read_str(e->prev_comm, sizeof(e->prev_comm), &t->comm);
 }
 

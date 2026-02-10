@@ -61,7 +61,7 @@ struct sched_event {
     char               prev_comm[TASK_COMM_LEN];
     int                prev_prio;
     unsigned long long prev_vruntime;
-    unsigned long long prev_sum_exec_runtime;
+    unsigned long long prev_sum_exec;       // prev task's se.sum_exec_runtime
     unsigned long long prev_load_weight;
 
     int  orig_cpu;
@@ -177,7 +177,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
                e->prev_pid, e->prev_tgid, e->prev_comm, e->prev_prio);
         printf("│    se.vruntime         = %llu ns\n", e->prev_vruntime);
         printf("│    se.sum_exec_runtime = %llu ns  (%.3f ms)\n",
-               e->prev_sum_exec_runtime, e->prev_sum_exec_runtime / 1e6);
+               e->prev_sum_exec, e->prev_sum_exec / 1e6);
         printf("│    se.load.weight      = %llu\n", e->prev_load_weight);
         break;
 
