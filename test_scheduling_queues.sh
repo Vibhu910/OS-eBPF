@@ -24,6 +24,13 @@ bpftrace "${SCRIPT_DIR}/scheduler_queue_tracer.bt" > "$OUTPUT_FILE" 2>&1 &
 TRACER_PID=$!
 sleep 1
 
+# Check if tracer started successfully
+if ! kill -0 $TRACER_PID 2>/dev/null; then
+    echo "Error: Tracer failed to start. Check $OUTPUT_FILE for errors."
+    cat "$OUTPUT_FILE"
+    exit 1
+fi
+
 echo "Running stress..."
 stress -i 3 -c 3 -m 3 --timeout ${DURATION}s
 
@@ -33,11 +40,9 @@ wait $TRACER_PID 2>/dev/null || true
 
 echo ""
 echo "Trace saved to: $OUTPUT_FILE"
-echo "Total events: $(wc -l < "$OUTPUT_FILE")"
+echo "Total events: $(wc -l < "$OUTPUT_FILE" 2>/dev/null || echo 0)"
 echo ""
 echo "Event breakdown:"
 grep -c "SCHED_SWITCH\|WAKEUP\|MIGRATE" "$OUTPUT_FILE" 2>/dev/null | awk '{print "  Scheduling: " $1}' || echo "  Scheduling: 0"
 grep -c "SCHED_STAT_RUNTIME" "$OUTPUT_FILE" 2>/dev/null | awk '{print "  Vruntime: " $1}' || echo "  Vruntime: 0"
-grep -c "ENQUEUE\|DEQUEUE" "$OUTPUT_FILE" 2>/dev/null | awk '{print "  Queue ops: " $1}' || echo "  Queue ops: 0"
-grep -c "WAIT_EVENT\|WAKE_UP_PROCESS" "$OUTPUT_FILE" 2>/dev/null | awk '{print "  Wait queue: " $1}' || echo "  Wait queue: 0"
 grep -c "FORK\|EXIT\|EXEC" "$OUTPUT_FILE" 2>/dev/null | awk '{print "  Lifecycle: " $1}' || echo "  Lifecycle: 0"

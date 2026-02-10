@@ -1,6 +1,7 @@
 #!/usr/bin/env bpftrace
 # Scheduler and Queue Tracer for CSE536/548
 # Traces: Process scheduling with vruntime, ready/wait queues, process lifecycle
+# Uses only stable tracepoints for maximum compatibility
 
 BEGIN
 {
@@ -10,13 +11,14 @@ BEGIN
     printf("Use 'bpftrace -c COMMAND' to trace a command\n\n");
 }
 
-// Process Scheduling
+// Process Scheduling - Every process scheduled
 tracepoint:sched:sched_switch
 {
     printf("%llu SCHED_SWITCH prev_pid=%d prev_comm=%s next_pid=%d next_comm=%s prev_state=%d\n",
         nsecs, args->prev_pid, str(args->prev_comm), args->next_pid, str(args->next_comm), args->prev_state);
 }
 
+// Ready Queue Operations - Processes moved to ready queue
 tracepoint:sched:sched_wakeup
 {
     printf("%llu WAKEUP pid=%d comm=%s prio=%d target_cpu=%d\n",
@@ -35,7 +37,7 @@ tracepoint:sched:sched_migrate_task
         nsecs, args->pid, str(args->comm), args->prio, args->orig_cpu, args->dest_cpu);
 }
 
-// Process Lifecycle (for queue context)
+// Process Lifecycle - For queue context and process tracking
 tracepoint:sched:sched_process_fork
 {
     printf("%llu FORK parent_pid=%d parent_comm=%s child_pid=%d\n",
@@ -54,42 +56,11 @@ tracepoint:sched:sched_process_exec
         nsecs, args->pid, args->old_pid, str(args->filename));
 }
 
-// Scheduler Internals (for vruntime and scheduling decisions)
+// Vruntime and Scheduling Variables - Key requirement
 tracepoint:sched:sched_stat_runtime
 {
     printf("%llu SCHED_STAT_RUNTIME pid=%d comm=%s runtime=%llu vruntime=%llu\n",
         nsecs, args->pid, str(args->comm), args->runtime, args->vruntime);
-}
-
-kprobe:__schedule
-{
-    printf("%llu SCHEDULE_INTERNAL pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
-}
-
-kprobe:pick_next_task_fair
-{
-    printf("%llu PICK_NEXT_TASK_FAIR pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
-}
-
-kprobe:enqueue_task_fair
-{
-    printf("%llu ENQUEUE_TASK pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
-}
-
-kprobe:dequeue_task_fair
-{
-    printf("%llu DEQUEUE_TASK pid=%d comm=%s cpu=%d\n", nsecs, pid, comm, cpu);
-}
-
-// Wait Queues
-kprobe:__wait_event
-{
-    printf("%llu WAIT_EVENT pid=%d comm=%s\n", nsecs, pid, comm);
-}
-
-kprobe:wake_up_process
-{
-    printf("%llu WAKE_UP_PROCESS pid=%d comm=%s\n", nsecs, pid, comm);
 }
 
 END
