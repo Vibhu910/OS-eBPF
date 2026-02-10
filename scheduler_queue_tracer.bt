@@ -1,14 +1,11 @@
 #!/usr/bin/env bpftrace
 # Scheduler and Queue Tracer for CSE536/548
 # Traces: Process scheduling with vruntime, ready/wait queues, process lifecycle
-# Uses only stable tracepoints for maximum compatibility
 
 BEGIN
 {
     printf("=== Scheduler & Queue Tracer Started ===\n");
-    printf("Tracing: Scheduling, Queues, Process Lifecycle\n");
-    printf("Use 'bpftrace -p PID' to filter by process ID\n");
-    printf("Use 'bpftrace -c COMMAND' to trace a command\n\n");
+    printf("Tracing: Scheduling, Queues, Process Lifecycle\n\n");
 }
 
 // Process Scheduling - Every process scheduled
@@ -54,13 +51,6 @@ tracepoint:sched:sched_process_exec
 {
     printf("%llu EXEC pid=%d old_pid=%d filename=%s\n",
         nsecs, args->pid, args->old_pid, str(args->filename));
-}
-
-// Vruntime and Scheduling Variables - Key requirement
-tracepoint:sched:sched_stat_runtime
-{
-    printf("%llu SCHED_STAT_RUNTIME pid=%d comm=%s runtime=%llu vruntime=%llu\n",
-        nsecs, args->pid, str(args->comm), args->runtime, args->vruntime);
 }
 
 END

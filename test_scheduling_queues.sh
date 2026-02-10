@@ -20,14 +20,23 @@ echo "Duration: ${DURATION} seconds"
 echo "Output: $OUTPUT_FILE"
 echo ""
 
+# Try to start tracer and capture errors
 bpftrace "${SCRIPT_DIR}/scheduler_queue_tracer.bt" > "$OUTPUT_FILE" 2>&1 &
 TRACER_PID=$!
-sleep 1
+sleep 2
 
-# Check if tracer started successfully
+# Check if tracer process is still running
 if ! kill -0 $TRACER_PID 2>/dev/null; then
-    echo "Error: Tracer failed to start. Check $OUTPUT_FILE for errors."
-    cat "$OUTPUT_FILE"
+    echo "Error: Tracer failed to start. Checking for errors..."
+    echo ""
+    if [ -f "$OUTPUT_FILE" ]; then
+        cat "$OUTPUT_FILE"
+    fi
+    echo ""
+    echo "Troubleshooting:"
+    echo "1. Check if bpftrace is installed: bpftrace --version"
+    echo "2. Check if kernel headers are installed: ls /usr/src/linux-headers-\$(uname -r)"
+    echo "3. Try running bpftrace directly: sudo bpftrace ${SCRIPT_DIR}/scheduler_queue_tracer.bt"
     exit 1
 fi
 
@@ -44,5 +53,4 @@ echo "Total events: $(wc -l < "$OUTPUT_FILE" 2>/dev/null || echo 0)"
 echo ""
 echo "Event breakdown:"
 grep -c "SCHED_SWITCH\|WAKEUP\|MIGRATE" "$OUTPUT_FILE" 2>/dev/null | awk '{print "  Scheduling: " $1}' || echo "  Scheduling: 0"
-grep -c "SCHED_STAT_RUNTIME" "$OUTPUT_FILE" 2>/dev/null | awk '{print "  Vruntime: " $1}' || echo "  Vruntime: 0"
 grep -c "FORK\|EXIT\|EXEC" "$OUTPUT_FILE" 2>/dev/null | awk '{print "  Lifecycle: " $1}' || echo "  Lifecycle: 0"
