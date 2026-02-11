@@ -134,8 +134,17 @@ static __always_inline void fill_se(struct sched_event *e,
     e->slice = BPF_CORE_READ(t, se.slice);
 
     // Additional sched_entity fields
+    // Note: These fields may not exist in all kernel versions
+    // If a field doesn't exist, BPF_CORE_READ will fail at compile time
+    // We set defaults for fields that don't exist
+    
+    // on_rq - may not exist in all kernel versions
+    // If compilation fails with "no member named 'on_rq'", comment out the next line
     e->on_rq = BPF_CORE_READ(t, se.on_rq);
-    e->last_update_rq_clock = BPF_CORE_READ(t, se.last_update_rq_clock);
+    
+    // last_update_rq_clock - doesn't exist in sched_entity structure
+    // This field is not part of sched_entity, so we set it to 0
+    e->last_update_rq_clock = 0;
 
     // cfs_rq that owns this sched_entity
     struct cfs_rq *cfs = BPF_CORE_READ(t, se.cfs_rq);
