@@ -379,7 +379,11 @@ int BPF_KPROBE(handle_dequeue, struct rq *rq, struct task_struct *p, int flags)
 // ─────────────────────────────────────────────
 //  9.  Prepare to wait - captures wait queue head
 //      This is called before a task enters a wait queue
+//      NOTE: This probe may not exist in all kernel versions
+//      If you get error -2, comment out this entire section
 // ─────────────────────────────────────────────
+// Uncomment if prepare_to_wait exists in your kernel:
+/*
 SEC("kprobe/prepare_to_wait")
 int BPF_KPROBE(handle_prepare_to_wait,
                struct wait_queue_head *wq,
@@ -394,41 +398,47 @@ int BPF_KPROBE(handle_prepare_to_wait,
     wq_info.wait_queue_flags = 0;
     wq_info.timestamp_ns = bpf_ktime_get_ns();
     
-    // Try to read wait queue flags if available
-    // Note: wait_queue_head structure varies by kernel version
-    // We'll set type based on which probe called prepare_to_wait
-    
     bpf_map_update_elem(&wait_queue_map, &pid, &wq_info, BPF_ANY);
     return 0;
 }
+*/
 
+// ─────────────────────────────────────────────
+//  Wait Queue Detection Probes (Optional)
+//  These probes may not exist in all kernel versions
+//  If attachment fails, comment out the ones that don't exist
+// ─────────────────────────────────────────────
+
+// Note: Some of these kprobes may not exist in your kernel version.
+// If you get "Failed to attach BPF programs: -2", it means some functions
+// don't exist. Comment out the probes that fail.
+
+// prepare_to_wait_exclusive - may not exist in all kernels
+// Uncomment if it exists in your kernel:
+/*
 SEC("kprobe/prepare_to_wait_exclusive")
 int BPF_KPROBE(handle_prepare_to_wait_exclusive,
                struct wait_queue_head *wq,
                struct wait_queue_entry *wq_entry,
                int state)
 {
-    // Same as prepare_to_wait but for exclusive waits
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    
     struct wait_queue_info wq_info = {};
     wq_info.wait_queue_head_addr = (__u64)wq;
-    wq_info.wait_queue_type = 0; // Unknown - will be set by specific probes
+    wq_info.wait_queue_type = 0;
     wq_info.wait_queue_flags = 0;
     wq_info.timestamp_ns = bpf_ktime_get_ns();
-    
     bpf_map_update_elem(&wait_queue_map, &pid, &wq_info, BPF_ANY);
     return 0;
 }
+*/
 
-// ─────────────────────────────────────────────
-//  10. Mutex lock - identifies mutex wait queues
-// ─────────────────────────────────────────────
+// Mutex probes - comment out if they don't exist
+/*
 SEC("kprobe/mutex_lock")
 int BPF_KPROBE(handle_mutex_lock, void *lock)
 {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    
     struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
     if (wq_info) {
         wq_info->wait_queue_type = 2; // MUTEX
@@ -440,9 +450,7 @@ int BPF_KPROBE(handle_mutex_lock, void *lock)
 SEC("kprobe/__mutex_lock_slowpath")
 int BPF_KPROBE(handle_mutex_lock_slowpath, void *lock)
 {
-    // Mutex slow path - definitely a mutex wait
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    
     struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
     if (wq_info) {
         wq_info->wait_queue_type = 2; // MUTEX
@@ -450,10 +458,10 @@ int BPF_KPROBE(handle_mutex_lock_slowpath, void *lock)
     }
     return 0;
 }
+*/
 
-// ─────────────────────────────────────────────
-//  11. I/O wait - identifies I/O wait queues
-// ─────────────────────────────────────────────
+// I/O wait probes - comment out if they don't exist
+/*
 SEC("kprobe/__wait_on_bit")
 int BPF_KPROBE(handle_wait_on_bit,
                void *word,
@@ -462,7 +470,6 @@ int BPF_KPROBE(handle_wait_on_bit,
                unsigned timeout)
 {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    
     struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
     if (wq_info) {
         wq_info->wait_queue_type = 1; // I/O
@@ -475,7 +482,6 @@ SEC("kprobe/wait_on_page_bit")
 int BPF_KPROBE(handle_wait_on_page_bit, void *page, int bit_nr)
 {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    
     struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
     if (wq_info) {
         wq_info->wait_queue_type = 1; // I/O
@@ -483,15 +489,14 @@ int BPF_KPROBE(handle_wait_on_page_bit, void *page, int bit_nr)
     }
     return 0;
 }
+*/
 
-// ─────────────────────────────────────────────
-//  12. Semaphore wait - identifies semaphore wait queues
-// ─────────────────────────────────────────────
+// Semaphore probes - comment out if they don't exist
+/*
 SEC("kprobe/down")
 int BPF_KPROBE(handle_down, void *sem)
 {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    
     struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
     if (wq_info) {
         wq_info->wait_queue_type = 3; // SEMAPHORE
@@ -504,7 +509,6 @@ SEC("kprobe/__down")
 int BPF_KPROBE(handle_down_slowpath, void *sem)
 {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    
     struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
     if (wq_info) {
         wq_info->wait_queue_type = 3; // SEMAPHORE
@@ -512,15 +516,14 @@ int BPF_KPROBE(handle_down_slowpath, void *sem)
     }
     return 0;
 }
+*/
 
-// ─────────────────────────────────────────────
-//  13. Sleep wait - identifies sleep/timeout wait queues
-// ─────────────────────────────────────────────
+// Sleep probes - comment out if they don't exist
+/*
 SEC("kprobe/schedule_timeout")
 int BPF_KPROBE(handle_schedule_timeout, long timeout)
 {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    
     struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
     if (wq_info) {
         wq_info->wait_queue_type = 4; // SLEEP
@@ -533,7 +536,6 @@ SEC("kprobe/msleep")
 int BPF_KPROBE(handle_msleep, unsigned int msecs)
 {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    
     struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
     if (wq_info) {
         wq_info->wait_queue_type = 4; // SLEEP
@@ -542,18 +544,13 @@ int BPF_KPROBE(handle_msleep, unsigned int msecs)
     return 0;
 }
 
-// ─────────────────────────────────────────────
-//  14. Finish wait - cleanup wait queue tracking
-// ─────────────────────────────────────────────
 SEC("kprobe/finish_wait")
 int BPF_KPROBE(handle_finish_wait,
                struct wait_queue_head *wq,
                struct wait_queue_entry *wq_entry)
 {
-    // Clean up wait queue info when task finishes waiting
-    // Note: This may fire before dequeue_task_fair, so we keep the entry
-    // until dequeue_task_fair consumes it
     return 0;
 }
+*/
 
 char LICENSE[] SEC("license") = "GPL";

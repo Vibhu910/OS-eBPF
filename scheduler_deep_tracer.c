@@ -121,7 +121,9 @@ static const char *wait_queue_type_str(unsigned char t) {
     }
 }
 
-// Print the CFS sched_entity block for a task
+// Old print functions - kept for reference but not used in tabular format
+// Uncomment these if you want to switch back to tree format
+/*
 static void print_se_block(const char *prefix,
                             unsigned int pid, unsigned int tgid,
                             const char *comm, int prio,
@@ -156,7 +158,6 @@ static void print_se_block(const char *prefix,
     printf("%s    se.last_update_rq_clock = %llu ns\n",  prefix, last_update_rq_clock);
 }
 
-// Print the CFS run-queue snapshot
 static void print_cfs_block(const char *prefix, const struct sched_event *e)
 {
     printf("%s  [cfs_rq @ cpu%d]\n", prefix, e->cpu);
@@ -166,19 +167,16 @@ static void print_cfs_block(const char *prefix, const struct sched_event *e)
     printf("%s    cfs_rq.h_nr_running  = %u\n",      prefix, e->cfs_h_nr_running);
     printf("%s    cfs_rq.exec_clock    = %llu ns\n", prefix, e->cfs_exec_clock);
     printf("%s    cfs_rq.load.weight   = %llu\n",    prefix, e->cfs_load_weight);
-    // lag = how far behind/ahead vs min_vruntime
     long long lag = (long long)e->vruntime - (long long)e->cfs_min_vruntime;
     printf("%s    vruntime lag vs min  = %lld ns  (%s)\n",
            prefix, lag, lag > 0 ? "behind avg" : "ahead of avg");
 }
 
-// Print wait queue information
 static void print_wait_queue_info(const char *prefix, const struct sched_event *e)
 {
     if (e->wait_queue_head_addr == 0 && e->wait_queue_type == 0) {
-        return; // No wait queue info available
+        return;
     }
-    
     printf("%s  [Wait Queue Info]\n", prefix);
     if (e->wait_queue_head_addr != 0) {
         printf("%s    wait_queue_head_addr = 0x%016llx\n", prefix, e->wait_queue_head_addr);
@@ -191,6 +189,7 @@ static void print_wait_queue_info(const char *prefix, const struct sched_event *
         printf("%s    wait_queue_flags     = 0x%08x\n", prefix, e->wait_queue_flags);
     }
 }
+*/
 
 // ── tabular output helpers ──────────────────────────────────────────────────
 
@@ -258,6 +257,8 @@ static void print_event_row(const struct sched_event *e) {
     strncpy(state_short, state_full, sizeof(state_short) - 1);
     state_short[sizeof(state_short) - 1] = '\0';
     
+    const char *wq_type_str = (e->wait_queue_type != 0) ? wait_queue_type_str(e->wait_queue_type) : "-";
+    
     printf("%-12s %-3d %-12s %-6u %-6u %-16.16s %-5d %-6d %-15s %-10s %-8llu %-6u %-15.15s %-6u %-15s %-8llu %-10u %-12s %-20s",
            event_name(e->event_type),
            e->cpu,
@@ -277,7 +278,7 @@ static void print_event_row(const struct sched_event *e) {
            e->cfs_load_weight,
            e->prev_pid,
            prev_vr_str,
-           e->wait_queue_type != 0 ? wait_queue_type_str(e->wait_queue_type) : "-",
+           wq_type_str,
            wq_addr_str);
     
     // Print extra info on same line if available
