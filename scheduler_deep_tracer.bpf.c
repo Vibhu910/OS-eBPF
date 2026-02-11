@@ -55,6 +55,16 @@ struct sched_event {
     __u32  cfs_nr_running;        // cfs_rq->nr_running
     __u32  cfs_h_nr_running;      // cfs_rq->h_nr_running
     __u64  cfs_exec_clock;        // cfs_rq->exec_clock
+    __u64  cfs_load_weight;       // cfs_rq->load.weight (total load weight)
+
+    // ── Additional CFS sched_entity fields ──
+    __u8   on_rq;                 // se.on_rq (is task on run queue)
+    __u64  last_update_rq_clock; // se.last_update_rq_clock
+
+    // ── Wait queue information ──
+    __u64  wait_queue_head_addr;  // Address of wait_queue_head (identifies which queue)
+    __u32  wait_queue_flags;      // Wait queue flags
+    __u8   wait_queue_type;        // 0=unknown, 1=I/O, 2=mutex, 3=semaphore, 4=sleep, 5=other
 
     // ── secondary task (for SWITCH prev / FORK parent / MIGRATE) ──
     __u32  prev_pid;
@@ -83,6 +93,21 @@ struct {
     __uint(max_entries, 16 * 1024 * 1024); // 16 MB
 } events SEC(".maps");
 
+// Scratch map to track wait queue information per task
+// Maps: pid -> wait_queue_info
+struct wait_queue_info {
+    __u64  wait_queue_head_addr;
+    __u8   wait_queue_type;
+    __u32  wait_queue_flags;
+    __u64  timestamp_ns;
+};
+struct {
+    __uint(type,        BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key,   __u32);   // pid
+    __type(value, struct wait_queue_info);
+} wait_queue_map SEC(".maps");
+
 // ─────────────────────────────────────────────
 //  Helper: fill CFS fields from task_struct
 // ─────────────────────────────────────────────
@@ -108,6 +133,10 @@ static __always_inline void fill_se(struct sched_event *e,
     e->vlag  = BPF_CORE_READ(t, se.vlag);
     e->slice = BPF_CORE_READ(t, se.slice);
 
+    // Additional sched_entity fields
+    e->on_rq = BPF_CORE_READ(t, se.on_rq);
+    e->last_update_rq_clock = BPF_CORE_READ(t, se.last_update_rq_clock);
+
     // cfs_rq that owns this sched_entity
     struct cfs_rq *cfs = BPF_CORE_READ(t, se.cfs_rq);
     if (cfs) {
@@ -115,6 +144,7 @@ static __always_inline void fill_se(struct sched_event *e,
         e->cfs_nr_running    = BPF_CORE_READ(cfs, nr_running);
         e->cfs_h_nr_running  = BPF_CORE_READ(cfs, h_nr_running);
         e->cfs_exec_clock    = BPF_CORE_READ(cfs, exec_clock);
+        e->cfs_load_weight    = BPF_CORE_READ(cfs, load.weight);
         // avg_vruntime added in ~6.6; CO-RE silently gives 0 on older kernels
         e->cfs_avg_vruntime  = BPF_CORE_READ(cfs, avg_vruntime);
     }
@@ -322,7 +352,198 @@ int BPF_KPROBE(handle_dequeue, struct rq *rq, struct task_struct *p, int flags)
 
     fill_se(e, p);
 
+    // Get wait queue information if available
+    __u32 pid = BPF_CORE_READ(p, pid);
+    struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
+    if (wq_info) {
+        e->wait_queue_head_addr = wq_info->wait_queue_head_addr;
+        e->wait_queue_type      = wq_info->wait_queue_type;
+        e->wait_queue_flags     = wq_info->wait_queue_flags;
+        // Clean up the map entry
+        bpf_map_delete_elem(&wait_queue_map, &pid);
+    }
+
     bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+// ─────────────────────────────────────────────
+//  9.  Prepare to wait - captures wait queue head
+//      This is called before a task enters a wait queue
+// ─────────────────────────────────────────────
+SEC("kprobe/prepare_to_wait")
+int BPF_KPROBE(handle_prepare_to_wait,
+               struct wait_queue_head *wq,
+               struct wait_queue_entry *wq_entry,
+               int state)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info wq_info = {};
+    wq_info.wait_queue_head_addr = (__u64)wq;
+    wq_info.wait_queue_type = 0; // Unknown - will be set by specific probes
+    wq_info.wait_queue_flags = 0;
+    wq_info.timestamp_ns = bpf_ktime_get_ns();
+    
+    // Try to read wait queue flags if available
+    // Note: wait_queue_head structure varies by kernel version
+    // We'll set type based on which probe called prepare_to_wait
+    
+    bpf_map_update_elem(&wait_queue_map, &pid, &wq_info, BPF_ANY);
+    return 0;
+}
+
+SEC("kprobe/prepare_to_wait_exclusive")
+int BPF_KPROBE(handle_prepare_to_wait_exclusive,
+               struct wait_queue_head *wq,
+               struct wait_queue_entry *wq_entry,
+               int state)
+{
+    // Same as prepare_to_wait but for exclusive waits
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info wq_info = {};
+    wq_info.wait_queue_head_addr = (__u64)wq;
+    wq_info.wait_queue_type = 0; // Unknown - will be set by specific probes
+    wq_info.wait_queue_flags = 0;
+    wq_info.timestamp_ns = bpf_ktime_get_ns();
+    
+    bpf_map_update_elem(&wait_queue_map, &pid, &wq_info, BPF_ANY);
+    return 0;
+}
+
+// ─────────────────────────────────────────────
+//  10. Mutex lock - identifies mutex wait queues
+// ─────────────────────────────────────────────
+SEC("kprobe/mutex_lock")
+int BPF_KPROBE(handle_mutex_lock, void *lock)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
+    if (wq_info) {
+        wq_info->wait_queue_type = 2; // MUTEX
+        bpf_map_update_elem(&wait_queue_map, &pid, wq_info, BPF_ANY);
+    }
+    return 0;
+}
+
+SEC("kprobe/__mutex_lock_slowpath")
+int BPF_KPROBE(handle_mutex_lock_slowpath, void *lock)
+{
+    // Mutex slow path - definitely a mutex wait
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
+    if (wq_info) {
+        wq_info->wait_queue_type = 2; // MUTEX
+        bpf_map_update_elem(&wait_queue_map, &pid, wq_info, BPF_ANY);
+    }
+    return 0;
+}
+
+// ─────────────────────────────────────────────
+//  11. I/O wait - identifies I/O wait queues
+// ─────────────────────────────────────────────
+SEC("kprobe/__wait_on_bit")
+int BPF_KPROBE(handle_wait_on_bit,
+               void *word,
+               int bit,
+               unsigned mode,
+               unsigned timeout)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
+    if (wq_info) {
+        wq_info->wait_queue_type = 1; // I/O
+        bpf_map_update_elem(&wait_queue_map, &pid, wq_info, BPF_ANY);
+    }
+    return 0;
+}
+
+SEC("kprobe/wait_on_page_bit")
+int BPF_KPROBE(handle_wait_on_page_bit, void *page, int bit_nr)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
+    if (wq_info) {
+        wq_info->wait_queue_type = 1; // I/O
+        bpf_map_update_elem(&wait_queue_map, &pid, wq_info, BPF_ANY);
+    }
+    return 0;
+}
+
+// ─────────────────────────────────────────────
+//  12. Semaphore wait - identifies semaphore wait queues
+// ─────────────────────────────────────────────
+SEC("kprobe/down")
+int BPF_KPROBE(handle_down, void *sem)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
+    if (wq_info) {
+        wq_info->wait_queue_type = 3; // SEMAPHORE
+        bpf_map_update_elem(&wait_queue_map, &pid, wq_info, BPF_ANY);
+    }
+    return 0;
+}
+
+SEC("kprobe/__down")
+int BPF_KPROBE(handle_down_slowpath, void *sem)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
+    if (wq_info) {
+        wq_info->wait_queue_type = 3; // SEMAPHORE
+        bpf_map_update_elem(&wait_queue_map, &pid, wq_info, BPF_ANY);
+    }
+    return 0;
+}
+
+// ─────────────────────────────────────────────
+//  13. Sleep wait - identifies sleep/timeout wait queues
+// ─────────────────────────────────────────────
+SEC("kprobe/schedule_timeout")
+int BPF_KPROBE(handle_schedule_timeout, long timeout)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
+    if (wq_info) {
+        wq_info->wait_queue_type = 4; // SLEEP
+        bpf_map_update_elem(&wait_queue_map, &pid, wq_info, BPF_ANY);
+    }
+    return 0;
+}
+
+SEC("kprobe/msleep")
+int BPF_KPROBE(handle_msleep, unsigned int msecs)
+{
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    
+    struct wait_queue_info *wq_info = bpf_map_lookup_elem(&wait_queue_map, &pid);
+    if (wq_info) {
+        wq_info->wait_queue_type = 4; // SLEEP
+        bpf_map_update_elem(&wait_queue_map, &pid, wq_info, BPF_ANY);
+    }
+    return 0;
+}
+
+// ─────────────────────────────────────────────
+//  14. Finish wait - cleanup wait queue tracking
+// ─────────────────────────────────────────────
+SEC("kprobe/finish_wait")
+int BPF_KPROBE(handle_finish_wait,
+               struct wait_queue_head *wq,
+               struct wait_queue_entry *wq_entry)
+{
+    // Clean up wait queue info when task finishes waiting
+    // Note: This may fire before dequeue_task_fair, so we keep the entry
+    // until dequeue_task_fair consumes it
     return 0;
 }
 

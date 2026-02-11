@@ -55,6 +55,14 @@ struct sched_event {
     unsigned int       cfs_nr_running;
     unsigned int       cfs_h_nr_running;
     unsigned long long cfs_exec_clock;
+    unsigned long long cfs_load_weight;
+
+    unsigned char      on_rq;
+    unsigned long long last_update_rq_clock;
+
+    unsigned long long wait_queue_head_addr;
+    unsigned int       wait_queue_flags;
+    unsigned char      wait_queue_type;
 
     unsigned int       prev_pid;
     unsigned int       prev_tgid;
@@ -100,6 +108,19 @@ static const char *state_str(unsigned int s) {
     return "OTHER";
 }
 
+// Wait queue type names
+static const char *wait_queue_type_str(unsigned char t) {
+    switch (t) {
+        case 0: return "UNKNOWN";
+        case 1: return "I/O";
+        case 2: return "MUTEX";
+        case 3: return "SEMAPHORE";
+        case 4: return "SLEEP";
+        case 5: return "OTHER";
+        default: return "UNKNOWN";
+    }
+}
+
 // Print the CFS sched_entity block for a task
 static void print_se_block(const char *prefix,
                             unsigned int pid, unsigned int tgid,
@@ -113,7 +134,9 @@ static void print_se_block(const char *prefix,
                             unsigned long long slice,
                             unsigned long long lw,
                             unsigned int inv_lw,
-                            unsigned int state)
+                            unsigned int state,
+                            unsigned char on_rq,
+                            unsigned long long last_update_rq_clock)
 {
     printf("%s  pid=%-6u tgid=%-6u comm=%-16s state=%-22s\n",
            prefix, pid, tgid, comm, state_str(state));
@@ -129,6 +152,8 @@ static void print_se_block(const char *prefix,
            prefix, slice, slice / 1e6);
     printf("%s    se.load.weight          = %llu\n",      prefix, lw);
     printf("%s    se.load.inv_weight      = %u\n",        prefix, inv_lw);
+    printf("%s    se.on_rq                = %u\n",       prefix, on_rq);
+    printf("%s    se.last_update_rq_clock = %llu ns\n",  prefix, last_update_rq_clock);
 }
 
 // Print the CFS run-queue snapshot
@@ -140,10 +165,143 @@ static void print_cfs_block(const char *prefix, const struct sched_event *e)
     printf("%s    cfs_rq.nr_running    = %u\n",      prefix, e->cfs_nr_running);
     printf("%s    cfs_rq.h_nr_running  = %u\n",      prefix, e->cfs_h_nr_running);
     printf("%s    cfs_rq.exec_clock    = %llu ns\n", prefix, e->cfs_exec_clock);
+    printf("%s    cfs_rq.load.weight   = %llu\n",    prefix, e->cfs_load_weight);
     // lag = how far behind/ahead vs min_vruntime
     long long lag = (long long)e->vruntime - (long long)e->cfs_min_vruntime;
     printf("%s    vruntime lag vs min  = %lld ns  (%s)\n",
            prefix, lag, lag > 0 ? "behind avg" : "ahead of avg");
+}
+
+// Print wait queue information
+static void print_wait_queue_info(const char *prefix, const struct sched_event *e)
+{
+    if (e->wait_queue_head_addr == 0 && e->wait_queue_type == 0) {
+        return; // No wait queue info available
+    }
+    
+    printf("%s  [Wait Queue Info]\n", prefix);
+    if (e->wait_queue_head_addr != 0) {
+        printf("%s    wait_queue_head_addr = 0x%016llx\n", prefix, e->wait_queue_head_addr);
+    }
+    if (e->wait_queue_type != 0) {
+        printf("%s    wait_queue_type      = %s (%u)\n", 
+               prefix, wait_queue_type_str(e->wait_queue_type), e->wait_queue_type);
+    }
+    if (e->wait_queue_flags != 0) {
+        printf("%s    wait_queue_flags     = 0x%08x\n", prefix, e->wait_queue_flags);
+    }
+}
+
+// ── tabular output helpers ──────────────────────────────────────────────────
+
+static int header_printed = 0;
+
+static void print_header(void) {
+    if (header_printed) return;
+    printf("\n");
+    // Main table header
+    printf("%-12s %-3s %-12s %-6s %-6s %-16s %-5s %-6s %-15s %-10s %-8s %-6s %-15s %-6s %-15s %-8s %-10s %-12s %-20s\n",
+           "EVENT", "CPU", "TIME(s)", "PID", "TGID", "COMM", "PRIO", "STATIC", "VRUNTIME(ns)", "SUM_EXEC", "LOAD_WT", "ON_RQ", "STATE",
+           "CFS_NR", "CFS_MIN_VR", "CFS_LD_WT", "PREV_PID", "PREV_VR", "WQ_TYPE", "WQ_ADDR");
+    // Separator line
+    printf("%-12s %-3s %-12s %-6s %-6s %-16s %-5s %-6s %-15s %-10s %-8s %-6s %-15s %-6s %-15s %-8s %-10s %-12s %-20s\n",
+           "-----------", "---", "------------", "------", "------", "----------------", "-----", "------",
+           "---------------", "----------", "--------", "------", "---------------", "------", "---------------", "--------", "----------", "------------", "--------------------");
+    header_printed = 1;
+}
+
+static void print_event_row(const struct sched_event *e) {
+    unsigned long long ts_s  = e->timestamp_ns / 1000000000ULL;
+    unsigned long long ts_us = (e->timestamp_ns % 1000000000ULL) / 1000;
+    char time_str[32];
+    snprintf(time_str, sizeof(time_str), "%llu.%06llu", ts_s, ts_us);
+    
+    char vruntime_str[32];
+    // Format vruntime in a more readable way (use scientific notation for large numbers)
+    if (e->vruntime > 1000000000ULL) {
+        snprintf(vruntime_str, sizeof(vruntime_str), "%.2e", (double)e->vruntime);
+    } else {
+        snprintf(vruntime_str, sizeof(vruntime_str), "%llu", e->vruntime);
+    }
+    
+    char sum_exec_str[32];
+    snprintf(sum_exec_str, sizeof(sum_exec_str), "%.3fms", e->sum_exec_runtime / 1e6);
+    
+    char cfs_min_vr_str[32];
+    if (e->cfs_min_vruntime > 1000000000ULL) {
+        snprintf(cfs_min_vr_str, sizeof(cfs_min_vr_str), "%.2e", (double)e->cfs_min_vruntime);
+    } else {
+        snprintf(cfs_min_vr_str, sizeof(cfs_min_vr_str), "%llu", e->cfs_min_vruntime);
+    }
+    
+    char prev_vr_str[32];
+    if (e->prev_pid != 0) {
+        if (e->prev_vruntime > 1000000000ULL) {
+            snprintf(prev_vr_str, sizeof(prev_vr_str), "%.2e", (double)e->prev_vruntime);
+        } else {
+            snprintf(prev_vr_str, sizeof(prev_vr_str), "%llu", e->prev_vruntime);
+        }
+    } else {
+        strcpy(prev_vr_str, "-");
+    }
+    
+    char wq_addr_str[32];
+    if (e->wait_queue_head_addr != 0) {
+        snprintf(wq_addr_str, sizeof(wq_addr_str), "0x%016llx", e->wait_queue_head_addr);
+    } else {
+        strcpy(wq_addr_str, "-");
+    }
+    
+    // Truncate state string if too long
+    char state_short[16];
+    const char *state_full = state_str(e->task_state);
+    strncpy(state_short, state_full, sizeof(state_short) - 1);
+    state_short[sizeof(state_short) - 1] = '\0';
+    
+    printf("%-12s %-3d %-12s %-6u %-6u %-16.16s %-5d %-6d %-15s %-10s %-8llu %-6u %-15.15s %-6u %-15s %-8llu %-10u %-12s %-20s",
+           event_name(e->event_type),
+           e->cpu,
+           time_str,
+           e->pid,
+           e->tgid,
+           e->comm,
+           e->prio,
+           e->static_prio,
+           vruntime_str,
+           sum_exec_str,
+           e->load_weight,
+           e->on_rq,
+           state_short,
+           e->cfs_nr_running,
+           cfs_min_vr_str,
+           e->cfs_load_weight,
+           e->prev_pid,
+           prev_vr_str,
+           e->wait_queue_type != 0 ? wait_queue_type_str(e->wait_queue_type) : "-",
+           wq_addr_str);
+    
+    // Print extra info on same line if available
+    switch (e->event_type) {
+        case EVT_SWITCH:
+            if (e->prev_pid != 0) {
+                printf(" prev:%s", e->prev_comm);
+            }
+            break;
+        case EVT_MIGRATE:
+            printf(" cpu%d->cpu%d", e->orig_cpu, e->dest_cpu);
+            break;
+        case EVT_FORK:
+            if (e->child_pid != 0) {
+                printf(" child:%u", e->child_pid);
+            }
+            break;
+        case EVT_EXEC:
+            if (e->filename[0]) {
+                printf(" exec:%s", e->filename);
+            }
+            break;
+    }
+    printf("\n");
 }
 
 // ── ring-buffer callback ─────────────────────────────────────────────────────
@@ -151,119 +309,9 @@ static void print_cfs_block(const char *prefix, const struct sched_event *e)
 static int handle_event(void *ctx, void *data, size_t sz)
 {
     const struct sched_event *e = data;
-
-    // timestamp as seconds.microseconds
-    unsigned long long ts_s  = e->timestamp_ns / 1000000000ULL;
-    unsigned long long ts_us = (e->timestamp_ns % 1000000000ULL) / 1000;
-
-    printf("\n");
-    printf("┌─ %s  cpu=%-2d  time=%llu.%06llus\n",
-           event_name(e->event_type), e->cpu, ts_s, ts_us);
-
-    switch (e->event_type) {
-
-    // ── Context switch ───────────────────────────────────────────────────────
-    case EVT_SWITCH:
-        printf("│  ▶ NEXT  (going ON cpu)\n");
-        print_se_block("│",
-            e->pid, e->tgid, e->comm,
-            e->prio, e->static_prio, e->normal_prio,
-            e->vruntime, e->exec_start, e->sum_exec_runtime,
-            e->prev_sum_exec_runtime, e->vlag, e->slice,
-            e->load_weight, e->load_inv_weight, e->task_state);
-        print_cfs_block("│", e);
-        printf("│  ◀ PREV  (going OFF cpu / blocked)\n");
-        printf("│    pid=%-6u tgid=%-6u comm=%-16s prio=%d\n",
-               e->prev_pid, e->prev_tgid, e->prev_comm, e->prev_prio);
-        printf("│    se.vruntime         = %llu ns\n", e->prev_vruntime);
-        printf("│    se.sum_exec_runtime = %llu ns  (%.3f ms)\n",
-               e->prev_sum_exec, e->prev_sum_exec / 1e6);
-        printf("│    se.load.weight      = %llu\n", e->prev_load_weight);
-        break;
-
-    // ── Wakeup / added to ready queue ───────────────────────────────────────
-    case EVT_WAKEUP:
-    case EVT_WAKEUP_NEW:
-        printf("│  Task added to READY QUEUE (run queue)\n");
-        print_se_block("│",
-            e->pid, e->tgid, e->comm,
-            e->prio, e->static_prio, e->normal_prio,
-            e->vruntime, e->exec_start, e->sum_exec_runtime,
-            e->prev_sum_exec_runtime, e->vlag, e->slice,
-            e->load_weight, e->load_inv_weight, e->task_state);
-        print_cfs_block("│", e);
-        break;
-
-    // ── Wait queue (blocking) ────────────────────────────────────────────────
-    case EVT_WAIT:
-        printf("│  Task entering WAIT QUEUE (blocking) — state: %s\n",
-               state_str(e->task_state));
-        print_se_block("│",
-            e->pid, e->tgid, e->comm,
-            e->prio, e->static_prio, e->normal_prio,
-            e->vruntime, e->exec_start, e->sum_exec_runtime,
-            e->prev_sum_exec_runtime, e->vlag, e->slice,
-            e->load_weight, e->load_inv_weight, e->task_state);
-        print_cfs_block("│", e);
-        break;
-
-    // ── Migration ───────────────────────────────────────────────────────────
-    case EVT_MIGRATE:
-        printf("│  CPU migration: cpu%d → cpu%d\n", e->orig_cpu, e->dest_cpu);
-        print_se_block("│",
-            e->pid, e->tgid, e->comm,
-            e->prio, e->static_prio, e->normal_prio,
-            e->vruntime, e->exec_start, e->sum_exec_runtime,
-            e->prev_sum_exec_runtime, e->vlag, e->slice,
-            e->load_weight, e->load_inv_weight, e->task_state);
-        print_cfs_block("│", e);
-        break;
-
-    // ── Fork ────────────────────────────────────────────────────────────────
-    case EVT_FORK:
-        printf("│  PARENT: pid=%-6u comm=%s\n", e->prev_pid, e->prev_comm);
-        printf("│    se.vruntime     = %llu ns\n", e->prev_vruntime);
-        printf("│    se.load.weight  = %llu\n",    e->prev_load_weight);
-        printf("│  CHILD (new task, added to ready queue):\n");
-        print_se_block("│",
-            e->pid, e->tgid, e->comm,
-            e->prio, e->static_prio, e->normal_prio,
-            e->vruntime, e->exec_start, e->sum_exec_runtime,
-            e->prev_sum_exec_runtime, e->vlag, e->slice,
-            e->load_weight, e->load_inv_weight, e->task_state);
-        print_cfs_block("│", e);
-        break;
-
-    // ── Exit / zombie ───────────────────────────────────────────────────────
-    case EVT_EXIT:
-        printf("│  Process EXITING / becoming ZOMBIE\n");
-        print_se_block("│",
-            e->pid, e->tgid, e->comm,
-            e->prio, e->static_prio, e->normal_prio,
-            e->vruntime, e->exec_start, e->sum_exec_runtime,
-            e->prev_sum_exec_runtime, e->vlag, e->slice,
-            e->load_weight, e->load_inv_weight, e->task_state);
-        printf("│    Total CPU time used: %.3f ms\n",
-               e->sum_exec_runtime / 1e6);
-        break;
-
-    // ── Exec ────────────────────────────────────────────────────────────────
-    case EVT_EXEC:
-        printf("│  execve: %s\n", e->filename[0] ? e->filename : "(unknown)");
-        print_se_block("│",
-            e->pid, e->tgid, e->comm,
-            e->prio, e->static_prio, e->normal_prio,
-            e->vruntime, e->exec_start, e->sum_exec_runtime,
-            e->prev_sum_exec_runtime, e->vlag, e->slice,
-            e->load_weight, e->load_inv_weight, e->task_state);
-        break;
-
-    default:
-        printf("│  (unknown event type %u)\n", e->event_type);
-        break;
-    }
-
-    printf("└──────────────────────────────────────────────────────────────\n");
+    
+    print_header();
+    print_event_row(e);
     fflush(stdout);
     return 0;
 }
@@ -311,7 +359,9 @@ int main(int argc, char **argv)
 
     printf("=== Deep Scheduler Tracer ===\n");
     printf("Tracing CFS internals: vruntime, weights, cfs_rq, wait/ready queues\n");
-    printf("Duration: %d seconds  (Ctrl-C to stop early)\n\n", duration);
+    printf("Duration: %d seconds  (Ctrl-C to stop early)\n", duration);
+    printf("Output format: Tabular\n");
+    header_printed = 0; // Reset header flag
 
     time_t start = time(NULL);
     while (!stop && (time(NULL) - start) < duration) {
